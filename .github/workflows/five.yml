@@ -1,0 +1,195 @@
+# Split encode into several formats: one video -> pieces encoded at the same time -> joined + audio.
+# Nothing is stored in this repo except this file: the program, its settings and the source link are
+# sent encrypted with every run (the key is the repository secret LINK_KEY).
+name: Multi Encode
+
+on:
+  workflow_dispatch:
+    inputs:
+      link:
+        description: "Source link (encrypted by five.py)"
+        required: true
+      formats:
+        description: "Formats (comma separated)"
+        required: true
+        default: "480p,720p,1080p,720p.10BIT,1080p.10BIT"
+      name:
+        description: "Output name (empty = the file's name)"
+        required: false
+        default: ""
+      audio:
+        description: "Audio languages: all, or e.g. eng / hin,eng"
+        required: true
+        default: "all"
+      one_audio:
+        description: "Keep only ONE audio track (the first match)"
+        type: boolean
+        default: false
+      chunks:
+        description: "Number of pieces (about 2 per runner: the next piece goes to whichever runner is free)"
+        required: true
+        default: "38"
+      parallel:
+        description: "Pieces encoded at the same time on this account (its slots minus 1 for the audio)"
+        required: true
+        default: "19"
+      bundle:
+        description: "Encrypted program + settings (sent by five.py / the web app)"
+        required: true
+
+permissions:
+  contents: write   # temporary draft release that carries pieces between jobs
+
+env:
+  SCRATCH_TAG: split-${{ github.run_id }}
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  AUDIO_LANGS: ${{ inputs.audio }}
+  AUDIO_ONE: ${{ inputs.one_audio && '1' || '0' }}
+  LINK_KEY: ${{ secrets.LINK_KEY }}
+  BUNDLE: ${{ inputs.bundle }}
+  QUIET_LOG: "1"
+  CLEAN_META: "1"
+  PYTHONUNBUFFERED: "1"
+  FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+
+jobs:
+  prepare:
+    name: Download + split
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      name: ${{ steps.plan.outputs.name }}
+    steps:
+      - name: Prepare
+        run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
+
+      - name: Install ffmpeg
+        run: |
+          curl -fsSL "$FFMPEG_URL" | tar -xJ -C /opt
+          echo "/opt/ffmpeg-master-latest-linux64-gpl/bin" >> "$GITHUB_PATH"
+
+      - name: Work folder on the large disk
+        run: |
+          if sudo mkdir -p /mnt/work && sudo chown "$(id -u):$(id -g)" /mnt/work; then
+            echo "WORK=/mnt/work" >> "$GITHUB_ENV"
+          else
+            echo "WORK=$GITHUB_WORKSPACE/work" >> "$GITHUB_ENV"
+          fi
+
+      - name: Unlock link
+        env:
+          SEALED_URL: ${{ inputs.link }}
+        run: python3 split_encode.py unlock
+
+      - name: Download source
+        run: python3 split_encode.py download "$SOURCE_URL"
+
+      - name: Create temporary draft release
+        run: |
+          gh release create "$SCRATCH_TAG" --draft \
+            --title "scratch ${{ github.run_id }}" \
+            --notes "Temporary storage - deleted automatically."
+
+      - name: Plan, cut pieces, copy audio
+        id: plan
+        env:
+          CHUNKS: ${{ inputs.chunks }}
+          FORMATS: ${{ inputs.formats }}
+          OUT_NAME: ${{ inputs.name }}
+        run: python3 split_encode.py prepare "$CHUNKS" "$FORMATS" "true" "$OUT_NAME"
+
+  encode:
+    name: Piece ${{ matrix.chunk }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    if: needs.prepare.outputs.matrix != '[]'
+    strategy:
+      fail-fast: true
+      max-parallel: ${{ fromJSON(inputs.parallel) }}
+      matrix:
+        chunk: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Prepare
+        run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
+
+      - name: Install ffmpeg
+        run: |
+          curl -fsSL "$FFMPEG_URL" | tar -xJ -C /opt
+          echo "/opt/ffmpeg-master-latest-linux64-gpl/bin" >> "$GITHUB_PATH"
+
+      - name: Encode
+        run: python3 split_encode.py encode ${{ matrix.chunk }}
+
+  audio:
+    name: Audio
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Prepare
+        run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
+
+      - name: Install ffmpeg
+        run: |
+          curl -fsSL "$FFMPEG_URL" | tar -xJ -C /opt
+          echo "/opt/ffmpeg-master-latest-linux64-gpl/bin" >> "$GITHUB_PATH"
+
+      - name: Work folder on the large disk
+        run: |
+          if sudo mkdir -p /mnt/work && sudo chown "$(id -u):$(id -g)" /mnt/work; then
+            echo "WORK=/mnt/work" >> "$GITHUB_ENV"
+          else
+            echo "WORK=$GITHUB_WORKSPACE/work" >> "$GITHUB_ENV"
+          fi
+
+      - name: Encode audio
+        run: python3 split_encode.py audio
+
+  merge:
+    name: Join + upload
+    needs: [prepare, encode, audio]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Prepare
+        run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
+
+      - name: Install ffmpeg
+        run: |
+          curl -fsSL "$FFMPEG_URL" | tar -xJ -C /opt
+          echo "/opt/ffmpeg-master-latest-linux64-gpl/bin" >> "$GITHUB_PATH"
+
+      - name: Work folder on the large disk
+        run: |
+          if sudo mkdir -p /mnt/work && sudo chown "$(id -u):$(id -g)" /mnt/work; then
+            echo "WORK=/mnt/work" >> "$GITHUB_ENV"
+          else
+            echo "WORK=$GITHUB_WORKSPACE/work" >> "$GITHUB_ENV"
+          fi
+
+      - name: Join pieces, add audio and chapters
+        run: python3 split_encode.py merge
+
+      - name: Upload to Gofile
+        run: python3 split_encode.py gofile
+
+      - name: Keep as artifact if the upload failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.name }}
+          path: ${{ env.WORK }}/out/*.mkv
+          compression-level: 0
+          retention-days: 7
+
+  cleanup:
+    name: Delete temporary release
+    needs: [prepare, encode, audio, merge]
+    if: always() && (needs.merge.result == 'success' || needs.prepare.result == 'failure' || cancelled())
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete scratch release
+        run: gh release delete "$SCRATCH_TAG" --yes || true
