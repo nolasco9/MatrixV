@@ -1,0 +1,66 @@
+# Helper: encodes this account's share of the pieces of a movie that the hub account prepared.
+# The pieces are read from, and the results sent back to, the hub's temporary storage (HUB_TOKEN).
+# Nothing is stored in this repo except this file: the program and its settings are sent encrypted
+# with every run (the key is the repository secret LINK_KEY).
+name: Multi Encode Share
+
+on:
+  workflow_dispatch:
+    inputs:
+      hub:
+        description: "Hub repository (owner/name)"
+        required: true
+      tag:
+        description: "Hub's temporary storage tag"
+        required: true
+      pieces:
+        description: "This account's pieces, e.g. [1,5,9]"
+        required: true
+      parallel:
+        description: "Pieces encoded at the same time on this account (its slots)"
+        required: true
+        default: "20"
+      bundle:
+        description: "Encrypted program + settings (sent by matrixv.py)"
+        required: true
+
+env:
+  GH_REPO: ${{ inputs.hub }}
+  SCRATCH_TAG: ${{ inputs.tag }}
+  LINK_KEY: ${{ secrets.LINK_KEY }}
+  BUNDLE: ${{ inputs.bundle }}
+  QUIET_LOG: "1"
+  CLEAN_META: "1"
+  PYTHONUNBUFFERED: "1"
+  FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+
+jobs:
+  # Every job starts right away (no waiting for the split to finish): it installs ffmpeg, then
+  # waits for its own piece and starts on it the moment the hub has uploaded it.
+  encode:
+    name: Piece ${{ matrix.chunk }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.parallel) }}
+      matrix:
+        chunk: ${{ fromJSON(inputs.pieces) }}
+    steps:
+      - name: Prepare
+        run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
+
+      - name: Install ffmpeg
+        run: |
+          curl -fsSL "$FFMPEG_URL" | tar -xJ -C /opt
+          echo "/opt/ffmpeg-master-latest-linux64-gpl/bin" >> "$GITHUB_PATH"
+
+      - name: Wait for my piece
+        env:
+          GH_TOKEN: ${{ secrets.HUB_TOKEN }}
+        run: python3 split_encode.py wait ${{ matrix.chunk }}
+
+      - name: Encode
+        env:
+          GH_TOKEN: ${{ secrets.HUB_TOKEN }}
+        run: python3 split_encode.py encode ${{ matrix.chunk }}
