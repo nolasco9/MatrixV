@@ -36,6 +36,14 @@ on:
       bundle:
         description: "Encrypted program + settings (sent by five.py / the web app)"
         required: true
+      weights:
+        description: "Several accounts share the movie: their slots, e.g. 19,20,20 (empty = this account only)"
+        required: false
+        default: ""
+      me:
+        description: "This account's position in weights"
+        required: false
+        default: "0"
 
 permissions:
   contents: write   # temporary draft release that carries pieces between jobs
@@ -46,6 +54,8 @@ env:
   GH_REPO: ${{ github.repository }}
   AUDIO_LANGS: ${{ inputs.audio }}
   AUDIO_ONE: ${{ inputs.one_audio && '1' || '0' }}
+  SHARD_WEIGHTS: ${{ inputs.weights }}
+  SHARD_ME: ${{ inputs.me }}
   LINK_KEY: ${{ secrets.LINK_KEY }}
   BUNDLE: ${{ inputs.bundle }}
   QUIET_LOG: "1"
@@ -152,7 +162,7 @@ jobs:
     name: Join + upload
     needs: [prepare, encode, audio]
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 300     # may wait for the other accounts' pieces first
     steps:
       - name: Prepare
         run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
