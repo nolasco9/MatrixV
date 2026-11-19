@@ -47,6 +47,7 @@ on:
 
 permissions:
   contents: write   # temporary draft release that carries pieces between jobs
+  actions: write    # batch encode: start this account's next episode
 
 env:
   SCRATCH_TAG: split-${{ github.run_id }}
@@ -184,6 +185,8 @@ jobs:
         run: python3 split_encode.py merge
 
       - name: Upload to Gofile
+        env:
+          SEALED_URL: ${{ inputs.link }}
         run: python3 split_encode.py gofile
 
       - name: Keep as artifact if the upload failed
@@ -194,6 +197,24 @@ jobs:
           path: ${{ env.WORK }}/out/*.mkv
           compression-level: 0
           retention-days: 7
+
+  # Batch encode: once this episode's pieces are encoded, start the account's next episode (its
+  # download + split overlaps this episode's join). Runs after a failure too, so one bad episode
+  # does not stop the queue; a cancelled run stops it. Normal single-movie runs: nothing to do.
+  next:
+    name: Start next episode
+    needs: [prepare, encode, audio]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Prepare
+        run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
+
+      - name: Start next episode
+        env:
+          SEALED_URL: ${{ inputs.link }}
+        run: python3 split_encode.py chain
 
   cleanup:
     name: Delete temporary release
