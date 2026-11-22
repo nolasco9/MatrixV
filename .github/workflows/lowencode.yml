@@ -10,9 +10,9 @@ on:
         description: "Source link (encrypted by alexcloud.py)"
         required: true
       preset:
-        description: "x265 preset"
+        description: "slow = 8-bit (Main, AAC 64k, faster, plays everywhere) | slower = 10-bit (Main10, Opus 48k, better picture)"
         type: choice
-        options: [slow]
+        options: [slow, slower]
         default: slow
       quality:
         description: "Output quality"
@@ -52,6 +52,7 @@ env:
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
   X265_PRESET: ${{ inputs.preset }}
+  ENCODE_VERSION: ${{ inputs.preset == 'slower' && '10bit' || '8bit' }}
   AUDIO_LANGS: ${{ inputs.audio }}
   AUDIO_ONE: ${{ inputs.one_audio && '1' || '0' }}
   LINK_KEY: ${{ secrets.LINK_KEY }}
