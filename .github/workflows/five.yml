@@ -111,17 +111,35 @@ jobs:
           OUT_NAME: ${{ inputs.name }}
         run: python3 split_encode.py prepare "$CHUNKS" "$FORMATS" "true" "$OUT_NAME"
 
+  # Starts with the run and waits for the plan (uploaded before the cutting starts), then starts this
+  # account's pieces at once: each piece job waits only for its own piece, not for all the cutting.
+  # Stops at once if the download + split fails.
+  share:
+    name: Wait for the plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    outputs:
+      matrix: ${{ steps.share.outputs.matrix }}
+      count: ${{ steps.share.outputs.count }}
+    steps:
+      - name: Prepare
+        run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
+
+      - name: Which pieces start here
+        id: share
+        run: python3 split_encode.py share
+
   encode:
     name: Piece ${{ matrix.chunk }}
-    needs: prepare
+    needs: share
     runs-on: ubuntu-latest
     timeout-minutes: 340
-    if: needs.prepare.outputs.matrix != '[]'
+    if: needs.share.outputs.count != '0'
     strategy:
       fail-fast: true
       max-parallel: ${{ fromJSON(inputs.parallel) }}
       matrix:
-        chunk: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+        chunk: ${{ fromJSON(needs.share.outputs.matrix) }}
     steps:
       - name: Prepare
         run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
@@ -131,12 +149,15 @@ jobs:
           curl -fsSL "$FFMPEG_URL" | tar -xJ -C /opt
           echo "/opt/ffmpeg-master-latest-linux64-gpl/bin" >> "$GITHUB_PATH"
 
+      - name: Wait for my piece
+        run: python3 split_encode.py wait ${{ matrix.chunk }}
+
       - name: Encode
         run: python3 split_encode.py encode ${{ matrix.chunk }}
 
   audio:
     name: Audio
-    needs: prepare
+    needs: share                # starts at the plan; waits only for the audio copy, not for all the cutting
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
