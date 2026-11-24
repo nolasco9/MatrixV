@@ -35,17 +35,41 @@ env:
   FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
 
 jobs:
-  # Every job starts right away (no waiting for the split to finish): it installs ffmpeg, then
-  # waits for its own piece and starts on it the moment the hub has uploaded it.
+  # One small job first: it waits for the hub's plan (uploaded before the cutting starts) and keeps
+  # only this account's pieces that exist in the movie - a shorter movie has fewer pieces than were
+  # planned. So no job starts for a piece that does not exist, and no runners wait idle while the
+  # hub downloads the movie.
+  share:
+    name: Wait for the plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      matrix: ${{ steps.share.outputs.matrix }}
+      count: ${{ steps.share.outputs.count }}
+    steps:
+      - name: Prepare
+        run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
+
+      - name: Which of my pieces exist
+        id: share
+        env:
+          GH_TOKEN: ${{ secrets.HUB_TOKEN }}
+          PIECES: ${{ inputs.pieces }}
+        run: python3 split_encode.py share "$PIECES"
+
+  # Then one job per piece: it installs ffmpeg, waits for its own piece and starts on it the moment
+  # the hub has uploaded it.
   encode:
     name: Piece ${{ matrix.chunk }}
+    needs: share
+    if: needs.share.outputs.count != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(inputs.parallel) }}
       matrix:
-        chunk: ${{ fromJSON(inputs.pieces) }}
+        chunk: ${{ fromJSON(needs.share.outputs.matrix) }}
     steps:
       - name: Prepare
         run: printf '%s' "$BUNDLE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -a -A -pass env:LINK_KEY | tar -xz
